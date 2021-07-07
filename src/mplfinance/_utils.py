@@ -1,6 +1,5 @@
 """
 A collection of utilities for analyzing and plotting financial data.
-
 """
 
 import numpy  as np
@@ -8,25 +7,26 @@ import pandas as pd
 import matplotlib.dates as mdates
 import datetime
 
-from matplotlib import colors as mcolors
-from matplotlib.patches import Ellipse
+from itertools import cycle
+
+from matplotlib             import colors as mcolors
+from matplotlib.patches     import Ellipse
 from matplotlib.collections import LineCollection, PolyCollection, PatchCollection
+
 from mplfinance._arg_validators import _process_kwargs, _validate_vkwargs_dict
 from mplfinance._arg_validators import _alines_validator, _bypass_kwarg_validation
+from mplfinance._arg_validators import _xlim_validator, _is_datelike
+from mplfinance._styles         import _get_mpfstyle
 
 from six.moves import zip
 
-from mplfinance._styles import _get_mpfstyle
-
-def _check_input(opens, closes, highs, lows, miss=-1):
+def _check_input(opens, closes, highs, lows):
     """Checks that *opens*, *highs*, *lows* and *closes* have the same length.
     NOTE: this code assumes if any value open, high, low, close is
     missing (*-1*) they all are missing
 
     Parameters
     ----------
-    ax : `Axes`
-        an Axes instance to plot to
     opens : sequence
         sequence of opening values
     highs : sequence
@@ -35,55 +35,81 @@ def _check_input(opens, closes, highs, lows, miss=-1):
         sequence of low values
     closes : sequence
         sequence of closing values
-    miss : int
-        identifier of the missing data
 
     Raises
     ------
     ValueError
         if the input sequences don't have the same length
+        if the input sequences don't have NaN is same locations
     """
-
-    def _missing(sequence, miss=-1):
-        """Returns the index in *sequence* of the missing data, identified by
-        *miss*
-
-        Parameters
-        ----------
-        sequence :
-            sequence to evaluate
-        miss :
-            identifier of the missing data
-
-        Returns
-        -------
-        where_miss: numpy.ndarray
-            indices of the missing data
-        """
-        return np.where(np.array(sequence) == miss)[0]
-
     same_length = len(opens) == len(highs) == len(lows) == len(closes)
-    _missopens = _missing(opens)
-    same_missing = ((_missopens == _missing(highs)).all() and
-                    (_missopens == _missing(lows)).all() and
-                    (_missopens == _missing(closes)).all())
+    if not same_length:
+        raise ValueError('O,H,L,C must have the same length!')
 
-    if not (same_length and same_missing):
-        msg = ("*opens*, *highs*, *lows* and *closes* must have the same"
-               " length. NOTE: this code assumes if any value open, high,"
-               " low, close is missing (*-1*) they all must be missing.")
-        raise ValueError(msg)
+    o = np.where(np.isnan(opens))[0]
+    h = np.where(np.isnan(highs))[0]
+    l = np.where(np.isnan(lows))[0]
+    c = np.where(np.isnan(closes))[0]
 
-def roundTime(dt=None, roundTo=60):
-   """Round a datetime object to any time lapse in seconds
-   dt : datetime.datetime object, default now.
-   roundTo : Closest number of seconds to round to, default 1 minute.
-   Author: Thierry Husson 2012 - Use it as you want but don't blame me.
-   """
-   if dt is None : dt = datetime.datetime.now()
-   seconds = (dt.replace(tzinfo=None) - dt.min).seconds
-   rounding = (seconds+roundTo/2) // roundTo * roundTo
-   return dt + datetime.timedelta(0,rounding-seconds,-dt.microsecond)
+    # First check that they have the same number of NaN:
+    same_numnans = len(o) == len(h) == len(l) == len(c)
+    if not same_numnans:
+        raise ValueError('O,H,L,C must have the same amount of missing data!')
+
+    same_missing = ((o == h).all() and
+                    (o == l).all() and
+                    (o == c).all()
+                   )
+    if not same_missing:
+        raise ValueError('O,H,L,C must have the same missing data!')
+
+def _check_and_convert_xlim_configuration(data, config):
+    '''
+    Check, if user entered `xlim` kwarg, if user entered dates
+    then we may need to convert them to iloc or matplotlib dates.
+    '''
+    if config['xlim'] is None:
+        return None
+
+    xlim = config['xlim']
+
+    if not _xlim_validator(xlim):
+        raise ValueError('Bad xlim configuration #1')
+
+    if all([_is_datelike(dt) for dt in xlim]):
+        if config['show_nontrading']:
+            xlim = [ _date_to_mdate(dt) for dt in xlim]
+        else:
+            xlim = [ _date_to_iloc_extrapolate(data.index.to_series(),dt) for dt in xlim]
+        
+    return xlim
+
+
+def _construct_mpf_collections(ptype,dates,xdates,opens,highs,lows,closes,volumes,config,style):
+    collections = None
+    if ptype == 'candle' or ptype == 'candlestick':
+        collections = _construct_candlestick_collections(xdates, opens, highs, lows, closes,
+                                                         marketcolors=style['marketcolors'],config=config )
+
+    elif ptype =='hollow_and_filled':
+            collections = _construct_hollow_candlestick_collections(xdates, opens, highs, lows, closes,
+                                                         marketcolors=style['marketcolors'],config=config )
+
+    elif ptype == 'ohlc' or ptype == 'bars' or ptype == 'ohlc_bars':
+        collections = _construct_ohlc_collections(xdates, opens, highs, lows, closes,
+                                                  marketcolors=style['marketcolors'],config=config )
+    elif ptype == 'renko':
+        collections = _construct_renko_collections(
+            dates, highs, lows, volumes, config['renko_params'], closes, marketcolors=style['marketcolors'])
+
+    elif ptype == 'pnf':
+        collections = _construct_pointnfig_collections(
+            dates, highs, lows, volumes, config['pnf_params'], closes, marketcolors=style['marketcolors'])
+    else:
+        raise TypeError('Unknown ptype="',str(ptype),'"')
+     
+    return collections
+
 
 def _calculate_atr(atr_length, highs, lows, closes):
     """Calculate the average true range
@@ -161,7 +187,23 @@ def _updown_colors(upcolor,downcolor,opens,closes,use_prev_close=False):
         _list = [ cmap[pre < cls] for cls,pre in zip(closes[1:], closes) ]
         return [first] + _list
 
+
+def _updownhollow_colors(upcolor,downcolor,hollowcolor,opens,closes):
+    if upcolor == downcolor:
+        return upcolor
+    umap = {True : hollowcolor, False : upcolor  }
+    dmap = {True : hollowcolor, False : downcolor}
+    first = umap[closes[0] > opens[0]]
+    _list = [ umap[cls > opn] if cls > cls0 else dmap[cls > opn] for cls0,opn,cls in zip(closes[0:-1],opens[1:],closes[1:]) ]
+    return [first] + _list
+
+
 def _date_to_iloc(dtseries,date):
+    '''Convert a `date` to a location, given a date series w/a datetime index. 
+       If `date` does not exactly match a date in the series then interpolate between two dates.
+       If `date` is outside the range of dates in the series, then raise an exception
+      .
+    '''
     d1s = dtseries.loc[date:]
     if len(d1s) < 1:
         sdtrange = str(dtseries[0])+' to '+str(dtseries[-1])
@@ -179,6 +221,97 @@ def _date_to_iloc(dtseries,date):
     loc2 = dtseries.index.get_loc(d2)
     if isinstance(loc2,slice): loc2 = loc2.stop - 1
     return (loc1+loc2)/2.0
+
+def _date_to_iloc_linear(dtseries,date,trace=False):
+    '''Find the location of a date using linear extrapolation.
+       Use the endpoints of `dtseries` to calculate the slope
+       and yintercept for the line:
+           iloc = (slope)*(dtseries) + (yintercept)
+       Then use them to calculate the location of `date`
+    '''
+    d1 = _date_to_mdate(dtseries.index[0])
+    d2 = _date_to_mdate(dtseries.index[-1])
+
+    if trace: print('d1,d2=',d1,d2)
+    i1 = 0.0
+    i2 = len(dtseries) - 1.0
+    if trace: print('i1,i2=',i1,i2)
+    
+    slope   = (i2 - i1) / (d2 - d1)
+    yitrcpt1 = i1 - (slope*d1)
+    if trace: print('slope,yitrcpt=',slope,yitrcpt1)
+    yitrcpt2 = i2 - (slope*d2)
+    if trace: print('slope,yitrcpt=',slope,yitrcpt2)
+    if yitrcpt1 != yitrcpt2:
+        print('WARNING: yintercepts NOT equal!!!(',yitrcpt1,yitrcpt2,')')
+        yitrcpt = (yitrcpt1 + yitrcpt2) / 2.0
+    else:
+        yitrcpt = yitrcpt1 
+    return (slope * _date_to_mdate(date)) + yitrcpt
+
+def _date_to_iloc_5_7ths(dtseries,date,direction,trace=False):
+        first = _date_to_mdate(dtseries.index[0])
+        last  = _date_to_mdate(dtseries.index[-1])
+        avg_days_between_points = (last - first)/float(len(dtseries))
+        if avg_days_between_points < 0.33:  # intraday (not daily)
+            return None
+        if direction == 'forward':
+            delta       = _date_to_mdate(date) - _date_to_mdate(dtseries.index[-1])
+            loc_5_7ths  = len(dtseries) - 1 + (5/7.)*delta
+        elif direction == 'backward':
+            delta      = _date_to_mdate(dtseries.index[0]) - _date_to_mdate(date)
+            loc_5_7ths = - (5./7.)*delta
+        else:
+            raise ValueError('_date_to_iloc_5_7ths got BAD direction value='+str(direction))
+        return loc_5_7ths
+
+def _date_to_iloc_extrapolate(dtseries,date):
+    '''Convert a `date` to a location, given a date series w/a datetime index. 
+       If `date` does not exactly match a date in the series then interpolate between two dates.
+       If `date` is outside the range of dates in the series, then extrapolate:
+       Extrapolation results in increased error as the distance of the extrapolation increases.
+       We have two methods to extrapolate:
+       (1) Determine a linear equation based on the data provided in `dtseries`,
+           and use that equation to calculate the location for the date.
+       (2) Multiply by 5/7 the number of days between the edge date of dtseries and the 
+           date for which we are requesting a location.
+           THIS ASSUMES DAILY data AND a 5 DAY TRADING WEEK.
+       Empirical observation (scratch_pad/date_to_iloc_extrapolation.ipynb) shows that
+       the systematic error of these two methods tends to be in opposite directions:
+       taking the average of the two methods reduces systematic errorr: However,
+       since method (2) applies only to DAILY data, we take the average of the two
+       methods only for daily data.  For intraday data we use only method (1).
+    '''
+
+    d1s = dtseries.loc[date:]
+    if len(d1s) < 1:
+        # extrapolate forward:
+        loc_linear  = _date_to_iloc_linear(dtseries,date)
+        loc_5_7ths  = _date_to_iloc_5_7ths(dtseries,date,'forward')
+        if loc_5_7ths is not None:
+            return (loc_linear + loc_5_7ths)/2.0
+        else:
+            return loc_linear
+    d1 = d1s.index[0]
+    d2s = dtseries.loc[:date]
+    if len(d2s) < 1:
+        # extrapolate backward:
+        loc_linear = _date_to_iloc_linear(dtseries,date)
+        loc_5_7ths = _date_to_iloc_5_7ths(dtseries,date,'backward')
+        if loc_5_7ths is not None:
+            return (loc_linear + loc_5_7ths)/2.0
+        else:
+            return loc_linear
+    # Below here we *interpolate* (not extrapolate)
+    d2 = dtseries.loc[:date].index[-1]
+    # If there are duplicate dates in the series, for example in a renko plot
+    # then .get_loc(date) will return a slice containing all the dups, so:
+    loc1 = dtseries.index.get_loc(d1)
+    if isinstance(loc1,slice): loc1 = loc1.start
+    loc2 = dtseries.index.get_loc(d2)
+    if isinstance(loc2,slice): loc2 = loc2.stop - 1
+    return (loc1+loc2)/2.0
+
 
 def _date_to_mdate(date):
     if isinstance(date,str):
@@ -256,7 +389,9 @@ def _valid_pnf_kwargs():
         'box_size'    : { 'Default'     : 'atr',
                           'Validator'   : lambda value: isinstance(value,(float,int)) or value == 'atr' },
         'atr_length'  : { 'Default'     : 14,
-                          'Validator'   : lambda value: isinstance(value,int) or value == 'total' },               
+                          'Validator'   : lambda value: isinstance(value,int) or value == 'total' },
+        'reversal'    : { 'Default'     : 1,
+                          'Validator'   : lambda value: isinstance(value,int) }               
     }
 
     _validate_vkwargs_dict(vkwargs)
@@ -276,7 +411,7 @@ def _valid_lines_kwargs():
                          a limited set of allowed values) may also validate that the
                          kwarg value is one of the allowed values.
     '''
-    valid_linestyles = ['-','solid','--','dashed','-.','dashdot','.','dotted',None,' ','']
+    valid_linestyles = ['-','solid','--','dashed','-.','dashdot',':','dotted',None,' ','']
     vkwargs = {
         'hlines'    : { 'Default'     : None,
                         'Validator'   : _bypass_kwarg_validation },
@@ -312,8 +447,7 @@ def _valid_lines_kwargs():
     return vkwargs
 
 
-
-def _construct_ohlc_collections(dates, opens, highs, lows, closes, marketcolors=None):
+def _construct_ohlc_collections(dates, opens, highs, lows, closes, marketcolors=None, config=None):
     """Represent the time, open, high, low, close as a vertical line
     ranging from low to high.  The left tick is the open and the right
     tick is the close.
@@ -347,21 +481,21 @@ def _construct_ohlc_collections(dates, opens, highs, lows, closes, marketcolors=
     else:
         mktcolors = marketcolors['ohlc']
 
-    rangeSegments = [((dt, low), (dt, high)) for dt, low, high in
-                     zip(dates, lows, highs) if low != -1]
+    rangeSegments = [((dt, low), (dt, high)) for dt, low, high in zip(dates, lows, highs)]
 
-    avg_dist_between_points = (dates[-1] - dates[0]) / float(len(dates))
+    datalen = len(dates)
 
-    ticksize = avg_dist_between_points / 2.5
+    avg_dist_between_points = (dates[-1] - dates[0]) / float(datalen)
+
+    ticksize = config['_width_config']['ohlc_ticksize']
 
     # the ticks will be from ticksize to 0 in points at the origin and
     # we'll translate these to the date, open location
-    openSegments = [((dt-ticksize, op), (dt, op)) for dt, op in zip(dates, opens) if op != -1]
-    
+    openSegments = [((dt-ticksize, op), (dt, op)) for dt, op in zip(dates, opens)]
 
     # the ticks will be from 0 to ticksize in points at the origin and
     # we'll translate these to the date, close location
-    closeSegments = [((dt, close), (dt+ticksize, close)) for dt, close in zip(dates, closes) if close != -1]
+    closeSegments = [((dt, close), (dt+ticksize, close)) for dt, close in zip(dates, closes)]
 
     if mktcolors['up'] == mktcolors['down']:
         colors = mktcolors['up']
@@ -369,34 +503,29 @@ def _construct_ohlc_collections(dates, opens, highs, lows, closes, marketcolors=
         colorup = mcolors.to_rgba(mktcolors['up'])
         colordown = mcolors.to_rgba(mktcolors['down'])
         colord = {True: colorup, False: colordown}
-        colors = [colord[open < close] for open, close in
-                  zip(opens, closes) if open != -1 and close != -1]
+        colors = [colord[open < close] for open, close in zip(opens, closes)]
 
-    useAA = 0,    # use tuple here
-    lw    = 0.5,  # use tuple here
-    lw = None
+    lw = config['_width_config']['ohlc_linewidth']
+
     rangeCollection = LineCollection(rangeSegments,
                                      colors=colors,
                                      linewidths=lw,
-                                     antialiaseds=useAA
                                      )
 
     openCollection = LineCollection(openSegments,
                                     colors=colors,
                                     linewidths=lw,
-                                    antialiaseds=useAA
                                     )
 
     closeCollection = LineCollection(closeSegments,
                                      colors=colors,
-                                     antialiaseds=useAA,
                                      linewidths=lw
                                      )
 
     return [rangeCollection, openCollection, closeCollection]
 
 
-def _construct_candlestick_collections(dates, opens, highs, lows, closes, marketcolors=None):
+def _construct_candlestick_collections(dates, opens, highs, lows, closes, marketcolors=None, config=None):
     """Represent the open, close as a bar line and high low range as a
     vertical line.
 
@@ -430,24 +559,23 @@ def _construct_candlestick_collections(dates, opens, highs, lows, closes, market
         marketcolors = _get_mpfstyle('classic')['marketcolors']
         #print('default market colors:',marketcolors)
 
-    avg_dist_between_points = (dates[-1] - dates[0]) / float(len(dates))
+    datalen = len(dates)
 
-    delta = avg_dist_between_points / 4.0
+    avg_dist_between_points = (dates[-1] - dates[0]) / float(datalen)
+
+    delta = config['_width_config']['candle_width'] / 2.0
 
     barVerts = [((date - delta, open),
                  (date - delta, close),
                  (date + delta, close),
                  (date + delta, open))
-                for date, open, close in zip(dates, opens, closes)
-                if open != -1 and close != -1]
+                for date, open, close in zip(dates, opens, closes)]
 
     rangeSegLow   = [((date, low), (date, min(open,close)))
-                     for date, low, open, close in zip(dates, lows, opens, closes)
-                     if low != -1]
+                     for date, low, open, close in zip(dates, lows, opens, closes)]
     
     rangeSegHigh  = [((date, high), (date, max(open,close)))
-                     for date, high, open, close in zip(dates, highs, opens, closes)
-                     if high != -1]
+                     for date, high, open, close in zip(dates, highs, opens, closes)]
                       
     rangeSegments = rangeSegLow + rangeSegHigh
 
@@ -465,23 +593,108 @@ def _construct_candlestick_collections(dates, opens, highs, lows, closes, market
     dc     = mcolors.to_rgba(marketcolors['wick']['down'], 1.0)
     wickcolor = _updown_colors(uc, dc, opens, closes)
 
-    useAA = 0,    # use tuple here
-    lw    = 0.5,  # use tuple here
-    lw = None
+    lw = config['_width_config']['candle_linewidth']
+
     rangeCollection = LineCollection(rangeSegments,
                                      colors=wickcolor,
                                      linewidths=lw,
-                                     antialiaseds=useAA
                                      )
 
     barCollection = PolyCollection(barVerts,
                                    facecolors=colors,
                                    edgecolors=edgecolor,
-                                   antialiaseds=useAA,
                                    linewidths=lw
                                    )
 
     return [rangeCollection, barCollection]
+
+
+def _construct_hollow_candlestick_collections(dates, opens, highs, lows, closes, marketcolors=None, config=None):
+    """Represent today's open to close as a "bar" line (candle body)
+    and high low range as a vertical line (candle wick)
+     
+    If config['type']=='hollow_and_filled' (hollow and filled candles) then candle edge and
+    wick color depend on PREVIOUS close to today's close (up or down), and the center of the
+    candle body (hollow or filled) depends on the today's open to close (up or down).
+
+    NOTE: this code assumes if any value open, low, high, close is
+    missing they all are missing
+
+    Parameters
+    ----------
+    opens : sequence
+        sequence of opening values
+    highs : sequence
+        sequence of high values
+    lows : sequence
+        sequence of low values
+    closes : sequence
+        sequence of closing values
+    marketcolors : dict of colors: up, down, edge, wick, alpha
+    alpha : float
+        bar (candle body) transparency
+
+    Returns
+    -------
+    ret : list
+        (lineCollection, barCollection)
+    """
+    
+    _check_input(opens, highs, lows, closes)
+
+    if marketcolors is None:
+        marketcolors = _get_mpfstyle('classic')['marketcolors']
+        #print('default market colors:',marketcolors)
+
+    datalen = len(dates)
+
+    avg_dist_between_points = (dates[-1] - dates[0]) / float(datalen)
+
+    delta = config['_width_config']['candle_width'] / 2.0
+
+    barVerts = [((date - delta, open),
+                 (date - delta, close),
+                 (date + delta, close),
+                 (date + delta, open))
+                for date, open, close in zip(dates, opens, closes)]
+
+    rangeSegLow   = [((date, low), (date, min(open,close)))
+                     for date, low, open, close in zip(dates, lows, opens, closes)]
+    
+    rangeSegHigh  = [((date, high), (date, max(open,close)))
+                     for date, high, open, close in zip(dates, highs, opens, closes)]
+                      
+    rangeSegments = rangeSegLow + rangeSegHigh
+
+    alpha  = marketcolors['alpha']
+
+    uc     = mcolors.to_rgba(marketcolors['candle'][ 'up' ], alpha)
+    dc     = mcolors.to_rgba(marketcolors['candle']['down'], alpha)
+   
+    hc = mcolors.to_rgba(marketcolors['hollow']) if 'hollow' in marketcolors else (0,0,0,0)
+    
+    colors = _updownhollow_colors(uc, dc, hc, opens, closes)  # for candle body.
+
+    edgecolor = _updown_colors(uc, dc, opens, closes, use_prev_close=True)
+    
+    wickcolor = _updown_colors(uc, dc, opens, closes, use_prev_close=True)
+
+    # For hollow candles, we scale the candle linewidth up a little:
+    lw = 1.25 * config['_width_config']['candle_linewidth']
+
+    rangeCollection = LineCollection(rangeSegments,
+                                     colors=wickcolor,
+                                     linewidths=lw,
+                                     )
+
+    barCollection = PolyCollection(barVerts,
+                                   facecolors=colors,
+                                   edgecolors=edgecolor,
+                                   linewidths=lw
+                                   )
+
+    return [rangeCollection, barCollection]
+
 
 def _construct_renko_collections(dates, highs, lows, volumes, config_renko_params, closes, marketcolors=None):
     """Represent the price change with bricks
@@ -644,7 +857,9 @@ def _construct_renko_collections(dates, highs, lows, volumes, config_renko_param
                                     edgecolors=edge_colors,
                                     linewidths=lw
                                     )
-    return [rectCollection,], new_dates, new_volumes, brick_values, brick_size
+    calculated_values = dict(dates=new_dates,volumes=new_volumes,
+                             values=brick_values,size=brick_size)
+    return [rectCollection,], calculated_values
 
 
 def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnfig_params, closes, marketcolors=None):
@@ -671,10 +886,11 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
     first to ensure every time there is a trend change (ex. previous box is
     an X, current brick is a O) we draw one less box to account for the price 
     having to move the previous box's amount before creating a box in the 
-    opposite direction. Next we adjust volume and dates to combine volume into 
-    non 0 box indexes and to only use dates from non 0 box indexes. We then
-    remove all 0s from the boxes array and once again combine adjacent similarly
-    signed differences in boxes.
+    opposite direction. During this same step we also combine like signed elements 
+    and associated volume/date data ignoring any zero values that are created by 
+    subtracting 1 from the box value. Next we recreate the box array utilizing a 
+    rolling_change and volume_cache to store and sum the changes that don't break 
+    the reversal threshold.
 
     Lastly, we enumerate through the boxes to populate the line_seg and circle_patches
     arrays. line_seg holds the / and \ line segments that make up an X and 
@@ -718,6 +934,7 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
     
     box_size = pointnfig_params['box_size']
     atr_length = pointnfig_params['atr_length']
+    reversal = pointnfig_params['reversal']
 
     if box_size == 'atr':
         if atr_length == 'total':
@@ -732,6 +949,9 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
         elif box_size < lower_limit:
             raise ValueError("Specified box_size may not be smaller than (0.01* the Average True Value of the dataset) which has value: "+ str(lower_limit))
 
+    if reversal < 1 or reversal > 9:
+        raise ValueError("Specified reversal must be an integer in the range [1,9]")
+    
     alpha  = marketcolors['alpha']
 
     uc     = mcolors.to_rgba(marketcolors['ohlc'][ 'up' ], alpha)
@@ -761,33 +981,88 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
     boxes, indexes = combine_adjacent(boxes)
     new_volumes, new_dates = coalesce_volume_dates(temp_volumes, temp_dates, indexes)
     
-    #subtract 1 from the abs of each diff except the first to account for the first box using the last box in the opposite direction
-    first_elem = boxes[0]
-    boxes = [boxes[i]- int((boxes[i]/abs(boxes[i]))) for i in range(1, len(boxes))]
-    boxes.insert(0, first_elem)
+    adjusted_boxes = [boxes[0]]
+    temp_volumes, temp_dates = [new_volumes[0]], [new_dates[0]]
+    volume_cache = 0
 
-    # adjust volume and dates to make sure volume is combined into non 0 box indexes and only use dates from non 0 box indexes
-    temp_volumes, temp_dates = [], []
-    for i in range(len(boxes)):
-        if boxes[i] == 0:
-            volume_cache += new_volumes[i]
-        else:
+    # Clean data to subtract 1 from all box # not including the first boxes element and combine like signed adjacent values (after ignoring zeros)
+    for i in range(1, len(boxes)):
+        adjusted_value = boxes[i]- int((boxes[i]/abs(boxes[i])))
+
+        # not equal to 0 and different signs
+        if adjusted_value != 0 and adjusted_boxes[-1]*adjusted_value < 0:
+
+            # Append adjusted_value, volumes, and date to associated lists
+            adjusted_boxes.append(adjusted_value)
             temp_volumes.append(new_volumes[i] + volume_cache)
-            volume_cache = 0
             temp_dates.append(new_dates[i])
-    
-    #remove 0s from boxes
-    boxes = list(filter(lambda diff: diff != 0, boxes))
 
-    # combine adjacent similarly signed differences again after 0s removed
-    boxes, indexes = combine_adjacent(boxes)
-    new_volumes, new_dates = coalesce_volume_dates(temp_volumes, temp_dates, indexes)
+            # reset volume_cache once we use it
+            volume_cache = 0
+
+        # not equal to 0 and same signs
+        elif adjusted_value != 0 and adjusted_boxes[-1]*adjusted_value > 0:
+
+            # Add adjusted_value and volume values to last added elements
+            adjusted_boxes[-1] += adjusted_value
+            temp_volumes[-1] += new_volumes[i] + volume_cache
+
+            # reset volume_cache once we use it
+            volume_cache = 0
+
+        else: # adjusted_value == 0
+            volume_cache += new_volumes[i]
+
+    boxes = [adjusted_boxes[0]]
+    new_volumes = [temp_volumes[0]]
+    new_dates = [temp_dates[0]]
+    
+    rolling_change = 0
+    volume_cache = 0
+    biggest_difference = 0 # only used for the last column
+
+    #Clean data to account for reversal size (added to allow overriding the default reversal of 1)
+    for i in range(1, len(adjusted_boxes)):
+
+        # Add to rolling_change and volume_cache which stores the box and volume values 
+        rolling_change += adjusted_boxes[i]
+        volume_cache += temp_volumes[i]
+
+        # if rolling_change is the same sign as the previous box and the abs value is bigger than the 
+        # abs value of biggest_difference then we should replace biggest_difference with rolling_change
+        if rolling_change*boxes[-1] > 0 and abs(rolling_change) > abs(biggest_difference):
+            biggest_difference = rolling_change
+
+        # Add to new list if the rolling change is >= the reversal
+        if abs(rolling_change) >= reversal:
+
+            # if rolling_change is the same sign as the previous # of boxes then combine
+            if rolling_change*boxes[-1] > 0:
+                boxes[-1] += rolling_change
+                new_volumes[-1] += volume_cache
+
+            # otherwise add new box
+            else: # < 0 (== 0 can't happen since neither rolling_change or boxes[-1] can be 0)
+                boxes.append(rolling_change)
+                new_volumes.append(volume_cache)
+                new_dates.append(temp_dates[i])
+            
+            # reset rolling_change and volume_cache once we've used them
+            rolling_change = 0
+            volume_cache = 0
+            
+            # reset biggest_difference as we start from the beginning every time there is a reversal
+            biggest_difference = 0
+    
+    # Adjust the last box column if the left over rolling_change is the same sign as the column
+    boxes[-1] += biggest_difference
+    new_volumes[-1] += volume_cache
 
     curr_price = closes[0]
     box_values = [] # y values for the boxes
     circle_patches = [] # list of circle patches to be used to create the cirCollection
     line_seg = [] # line segments that make up the Xs
-    
+
     for index, difference in enumerate(boxes):
         diff = abs(difference)
 
@@ -796,9 +1071,9 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
         
         x = [index] * (diff)
         y = [curr_price + (i * box_size * sign) for i in range(start_iteration, diff+start_iteration)]
-        
+
         curr_price += (box_size * sign * (diff))
-        box_values.append(sum(y) / len(y))
+        box_values.append( y )
         
         for i in range(len(x)): # x and y have the same length
             height = box_size * 0.85
@@ -825,7 +1100,9 @@ def _construct_pointnfig_collections(dates, highs, lows, volumes, config_pointnf
                                  linewidths=lw,
                                  antialiaseds=useAA
                                  )
-    return [cirCollection, xCollection], new_dates, new_volumes, box_values, box_size
+    calculated_values = dict(dates=new_dates,counts=boxes,values=box_values,
+                             volumes=new_volumes,size=box_size)
+    return [cirCollection, xCollection], calculated_values
 
 
 def _construct_aline_collections(alines, dtix=None):
@@ -1070,7 +1347,13 @@ def _construct_tline_collections(tlines, dtix, dates, opens, highs, lows, closes
         This closed-form linear least squares algorithm was taken from:
         https://mmas.github.io/least-squares-fitting-numpy-scipy
         '''
-        s  = dfslice[tline_use].mean(axis=1)
+        si = dfslice[tline_use].mean(axis=1)
+        s  = si.dropna() 
+        if len(s) < 2:
+            err = 'NOT enough data for Least Squares'
+            if (len(si) > 2):
+                err += ', due to presence of NaNs'
+            raise ValueError(err)
         xs = mdates.date2num(s.index.to_pydatetime())
         ys = s.values
         a  = np.vstack([xs, np.ones(len(xs))]).T
@@ -1144,3 +1427,19 @@ class IntegerIndexDateTimeFormatter(Formatter):
         #print('x=',x,'pos=',pos,'dates[',ix,']=',date,'dateformat=',dateformat)
         return dateformat
 
+def _mscatter(x,y,ax=None, m=None, **kw):
+    import matplotlib.markers as mmarkers
+    if not ax: ax=plt.gca()
+    sc = ax.scatter(x,y,**kw)
+    if (m is not None) and (len(m)==len(x)):
+        paths = []
+        for marker in m:
+            if isinstance(marker, mmarkers.MarkerStyle):
+                marker_obj = marker
+            else:
+                marker_obj = mmarkers.MarkerStyle(marker)
+            path = marker_obj.get_path().transformed(
+                        marker_obj.get_transform())
+            paths.append(path)
+        sc.set_paths(paths)
+    return sc

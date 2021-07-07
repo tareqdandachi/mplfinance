@@ -2,6 +2,9 @@ import matplotlib.dates  as mdates
 import pandas   as pd
 import numpy    as np
 import datetime
+from   mplfinance._helpers import _list_of_dict
+import matplotlib as mpl
+import warnings
 
 def _check_and_prepare_data(data, config):
     '''
@@ -26,10 +29,37 @@ def _check_and_prepare_data(data, config):
     if not isinstance(data.index,pd.core.indexes.datetimes.DatetimeIndex):
         raise TypeError('Expect data.index as DatetimeIndex')
 
-    o, h, l, c, v = config["columns"]
+    if (len(data.index) > config['warn_too_much_data'] and
+        (config['type']=='candle' or config['type']=='ohlc' or config['type']=='hollow_and_filled')
+       ):
+        warnings.warn('\n\n ================================================================= '+
+                      '\n\n   WARNING: YOU ARE PLOTTING SO MUCH DATA THAT IT MAY NOT BE'+
+                        '\n            POSSIBLE TO SEE DETAILS (Candles, Ohlc-Bars, Etc.)'+
+                        '\n   For more information see:'+
+                        '\n   - https://github.com/matplotlib/mplfinance/wiki/Plotting-Too-Much-Data'+
+                        '\n   '+
+                        '\n   TO SILENCE THIS WARNING, set `type=\'line\'` in `mpf.plot()`'+
+                        '\n   OR set kwarg `warn_too_much_data=N` where N is an integer '+
+                        '\n   LARGER than the number of data points you want to plot.'+
+                      '\n\n ================================================================ ',
+                  category=UserWarning)
+
+    # We will not be fully case-insensitive (since Pandas columns as NOT case-insensitive)
+    # but because so many people have requested it, for the default column names we will
+    # try both Capitalized and lower case:
+    columns = config['columns']
+    if columns is None:
+        columns =  ('Open', 'High', 'Low', 'Close', 'Volume')
+        if all([c.lower() in data for c in columns[0:4]]):
+            columns =  ('open', 'high', 'low', 'close', 'volume')
+        
+    o, h, l, c, v = columns
     cols = [o, h, l, c]
 
-    dates   = mdates.date2num(data.index.to_pydatetime())
+    if config['tz_localize']:
+        dates   = mdates.date2num(data.index.tz_localize(None).to_pydatetime())
+    else:  # Just in case someone was depending on this bug (Issue 236)
+        dates   = mdates.date2num(data.index.to_pydatetime())
     opens   = data[o].values
     highs   = data[h].values
     lows    = data[l].values
@@ -46,24 +76,72 @@ def _check_and_prepare_data(data, config):
 
     return dates, opens, highs, lows, closes, volumes
 
+def _get_valid_plot_types(plottype=None):
+
+    _alias_types = {
+        'candlestick'       : 'candle',
+        'ohlc_bars'         : 'ohlc',
+        'hollow_candle'     : 'hollow_and_filled',
+        'hollow'            : 'hollow_and_filled',
+        'hnf'               : 'hollow_and_filled',
+    }
+
+    _valid_types = ['candle','ohlc', 'line','renko','pnf','hollow_and_filled']
+
+    _valid_types_all = _valid_types.copy()
+    _valid_types_all.extend(_alias_types.keys())
+
+    if plottype is None:
+        return _valid_types_all
+
+    if plottype not in _valid_types_all:
+        return None
+    elif plottype in _alias_types:
+        return _alias_types[plottype]
+    else:
+        return plottype
+        
 
 def _mav_validator(mav_value):
-    ''' 
-    Value for mav (moving average) keyword may be:
-    scalar int greater than 1, or tuple of ints, or list of ints (greater than 1).
-    tuple or list limited to length of 7 moving averages (to keep the plot clean).
     '''
-    if isinstance(mav_value,int) and mav_value > 1:
+    Value for mav (moving average) keyword may be:
+    scalar int greater than 1, or tuple of ints, or list of ints (each greater than 1)
+    or a dict of `period` and `shift` each of which may be:
+    scalar int, or tuple of ints, or list of ints: each `period` int must be greater than 1
+    '''
+    def _valid_mav(value, is_period=True):
+        if not isinstance(value,(tuple,list,int)):
+            return False
+        if isinstance(value,int):
+            return (value >= 2 or not is_period)
+        # Must be a tuple or list here:
+        for num in value:
+            if not isinstance(num,int) or (is_period and num < 2):
+                return False
         return True
-    elif not isinstance(mav_value,tuple) and not isinstance(mav_value,list):
+
+    if not isinstance(mav_value,(tuple,list,int,dict)):
         return False
 
-    if not len(mav_value) < 8:
+    if not isinstance(mav_value,dict):
+        return _valid_mav(mav_value)
+
+    else: #isinstance(mav_value,dict)
+        if 'period' not in mav_value: return False
+
+        period = mav_value['period']
+        if not _valid_mav(period): return False
+
+        if 'shift' not in mav_value: return True
+
+        shift  = mav_value['shift']
+        if not _valid_mav(shift, False):  return False
+        if isinstance(period,int) and isinstance(shift,int): return True
+        if isinstance(period,(tuple,list)) and isinstance(shift,(tuple,list)):
+            if len(period) != len(shift): return False
+            return True
         return False
-    for num in mav_value:
-        if not isinstance(num,int) and num > 1:
-            return False
-    return True
+
 
 def _hlines_validator(value):
     if isinstance(value,dict):
@@ -84,6 +162,11 @@ def _is_datelike(value):
         except:
             return False
     return False
+
+def _xlim_validator(value):
+    return (isinstance(value, (list,tuple)) and len(value) == 2
+            and (all([isinstance(v,(int,float)) for v in value])
+                 or all([_is_datelike(v) for v in value])))
 
 def _vlines_validator(value):
     '''Validate `vlines` kwarg value:  must be "datelike" or sequence of "datelike"
@@ -239,3 +322,89 @@ def _process_kwargs(kwargs, vkwargs):
         config[key] = value
 
     return config
+
+def _valid_panel_id(panid):
+    return panid in ['main','lower'] or (isinstance(panid,int) and panid >= 0 and panid < 32)
+
+def _scale_padding_validator(value):
+    if isinstance(value,(int,float)):
+        return True
+    elif isinstance(value,dict):
+        valid_keys=('left','right','top','bottom')
+        for key in value:
+            if key not in valid_keys:
+                raise ValueError('Invalid key "'+str(key)+'" found in `scale_padding` dict.')
+            if not isinstance(value[key],(int,float)):
+                raise ValueError('`scale_padding` dict contains non-number at key "'+str(key)+'"') 
+        return True
+    else:
+        raise ValueError('`scale_padding` kwarg must be a number, or dict of (left,right,top,bottom) numbers.')
+    return False
+
+def _yscale_validator(value):
+    if isinstance(value,str) and value in ("linear", "log", "symlog", "logit"):
+        return True
+
+    if not isinstance(value,dict):
+        return False
+
+    # At this point, value is a dict:
+    if not 'yscale' in value:
+        return False
+
+    yscale = value['yscale']
+    if not (isinstance(yscale,str) and yscale in ("linear", "log", "symlog", "logit")):
+        return False
+
+    return True
+
+
+def _check_for_external_axes(config):
+    '''
+    Check that all `fig` and `ax` kwargs are either ALL None, 
+    or ALL are valid instances of Figures/Axes:
+ 
+    An external Axes object can be passed in three places:
+        - mpf.plot() `ax=` kwarg
+        - mpf.plot() `volume=` kwarg
+        - mpf.make_addplot() `ax=` kwarg
+    ALL three places MUST be an Axes object, OR
+    ALL three places MUST be None.  But it may not be mixed.
+    '''
+    ap_axlist = []
+    addplot = config['addplot']
+    if addplot is not None:
+        if isinstance(addplot,dict):
+            addplot = [addplot,]   # make list of dict to be consistent
+        elif not _list_of_dict(addplot):
+            raise TypeError('addplot must be `dict`, or `list of dict`, NOT '+str(type(addplot)))
+        for apd in addplot:
+            ap_axlist.append(apd['ax'])
+ 
+    if len(ap_axlist) > 0:
+        if config['ax'] is None:
+            if not all([ax is None for ax in ap_axlist]):
+                raise ValueError('make_addplot() `ax` kwarg NOT all None, while plot() `ax` kwarg IS None')
+        else: # config['ax'] is NOT None:
+            if not isinstance(config['ax'],mpl.axes.Axes):
+                raise ValueError('plot() ax kwarg must be of type `matplotlib.axis.Axes`')
+            if not all([isinstance(ax,mpl.axes.Axes) for ax in ap_axlist]):
+                raise ValueError('make_addplot() `ax` kwargs must all be of type `matplotlib.axis.Axes`')
+
+    # At this point, if we have not raised an exception, then plot(ax=) and make_addplot(ax=)
+    # are in sync: either they are all None, or they are all of type `matplotlib.axes.Axes`.
+    # Therefore we only need plot(ax=), i.e. config['ax'], as we check `volume`: ### and `fig`:
+
+    if config['ax'] is None:
+        if isinstance(config['volume'],mpl.axes.Axes):
+            raise ValueError('`volume` set to external Axes requires all other Axes be external.')
+        #if config['fig'] is not None:
+        #    raise ValueError('`fig` kwarg must be None if `ax` kwarg is None.')
+    else:
+        if not isinstance(config['volume'],mpl.axes.Axes) and config['volume'] != False:
+            raise ValueError('`volume` must be of type `matplotlib.axis.Axes`')
+        #if not isinstance(config['fig'],mpl.figure.Figure):
+        #    raise ValueError('`fig` kwarg must be of type `matplotlib.figure.Figure`')
+    
+    external_axes_mode = True if isinstance(config['ax'],mpl.axes.Axes) else False
+    return external_axes_mode

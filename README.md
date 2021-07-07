@@ -1,27 +1,32 @@
 [![Build Status](https://travis-ci.org/matplotlib/mplfinance.svg?branch=master)](https://travis-ci.org/matplotlib/mplfinance)
 
 # mplfinance
-## matplotlib utilities for the visualization, and visual analysis, of financial data
+matplotlib utilities for the visualization, and visual analysis, of financial data
+
+##  Installation
+```bash
+pip install --upgrade mplfinance
+```
+- mplfinance requires [matplotlib](https://pypi.org/project/matplotlib/) and [pandas](https://pypi.org/project/pandas/)
 
 ---
 
-# Installation
-## &nbsp;&nbsp;&nbsp;`pip install --upgrade mplfinance`
-   - mplfinance requires [matplotlib](https://pypi.org/project/matplotlib/) and [pandas](https://pypi.org/project/pandas/)
-
+## <a name="announcements"></a>**&roarr; [Latest Release Information](https://github.com/matplotlib/mplfinance/blob/master/RELEASE_NOTES.md) &loarr;**
 ---
 
-# <a name="tutorials"></a>Contents and Tutorials
+## <a name="tutorials"></a>Contents and Tutorials
 
   - **[The New API](https://github.com/matplotlib/mplfinance#newapi)**
   - **[Tutorials](https://github.com/matplotlib/mplfinance#tutorials)**
     - **[Basic Usage](https://github.com/matplotlib/mplfinance#usage)**
+    - **[Customizing the Appearance of Plots](https://github.com/matplotlib/mplfinance/blob/master/markdown/customization_and_styles.md)** (New features: June 2020)
     - **[Adding Your Own Technical Studies to Plots](https://github.com/matplotlib/mplfinance/blob/master/examples/addplot.ipynb)**
-    - **[Saving the Plot to a File](https://github.com/matplotlib/mplfinance/blob/master/examples/savefig.ipynb)**
-    - **[Customizing the Appearance of Plots](https://github.com/matplotlib/mplfinance/blob/master/examples/customization_and_styles.ipynb)**
+    - **[Subplots: Multiple Plots on a Single Figure](https://github.com/matplotlib/mplfinance/blob/master/markdown/subplots.md)** (**New features: August 2020**)
     - **[Price-Movement Plots (Renko, P&F, etc)](https://github.com/matplotlib/mplfinance/blob/master/examples/price-movement_plots.ipynb)**
     - **[Trends, Support, Resistance, and Trading Lines](https://github.com/matplotlib/mplfinance/blob/master/examples/using_lines.ipynb)**
-  - **[Latest Release Info](https://github.com/matplotlib/mplfinance/blob/master/RELEASE_NOTES.md)**
+    - **[Saving the Plot to a File](https://github.com/matplotlib/mplfinance/blob/master/examples/savefig.ipynb)**
+    - **[Animation/Updating your plots in realtime](https://github.com/matplotlib/mplfinance/blob/master/markdown/animation.md)** (**New: August 2020**)
+  - **&roarr; [Latest Release Info](https://github.com/matplotlib/mplfinance/blob/master/RELEASE_NOTES.md) &loarr;**
   - **[Some Background History About This Package](https://github.com/matplotlib/mplfinance#history)**
   - **[Old API Availability](https://github.com/matplotlib/mplfinance#oldapi)**
 
@@ -52,7 +57,7 @@ I am very interested to hear from you regarding what you think of the new `mplfi
 
 ---
 
-# <a name="usage"></a>Basic Usage
+## <a name="usage"></a>Basic Usage
 Start with a Pandas DataFrame containing OHLC data.  For example,
 
 
@@ -164,7 +169,6 @@ daily.tail(3)
 </table>
 
 
----
 <br>
 
 After importing mplfinance, plotting OHLC data is as simple as calling `mpf.plot()` on the dataframe
@@ -179,7 +183,6 @@ mpf.plot(daily)
 ![png](https://raw.githubusercontent.com/matplotlib/mplfinance/master/readme_files/readme_4_1.png)
 
 
----
 <br>
 
 The default plot type, as you can see above, is `'ohlc'`.  Other plot types can be specified with the keyword argument `type`, for example, `type='candle'`, `type='line'`, `type='renko'`, or `type='pnf'`
@@ -378,7 +381,7 @@ intraday.tail(3)
 
 
 
-The above dataframe contains Open,High,Low,Close data at 1 minute intervervals for the S&P 500 stock index for November 5, 6, 7 and 8, 2019.  Let's look at the last hour of trading on November 6th, with a 7 minute and 12 minute moving average.
+The above dataframe contains Open,High,Low,Close data at 1 minute intervals for the S&P 500 stock index for November 5, 6, 7 and 8, 2019.  Let's look at the last hour of trading on November 6th, with a 7 minute and 12 minute moving average.
 
 
 ```python
@@ -577,11 +580,9 @@ My name is Daniel Goldfarb.  In November 2019, I became the maintainer of `matpl
 It is my intention to archive the `matplotlib/mpl-finance` repository soon, and direct everyone to `matplotlib/mplfinance`.  The main reason for the rename is to avoid confusion with the hyphen and the underscore: As it was, `mpl-finance` was *installed with the hyphen, but imported with an underscore `mpl_finance`.*  Going forward it will be a simple matter of both installing and importing `mplfinance`.
 
 ---
-### <a name="oldapi"></a>old API availability
+## <a name="oldapi"></a>Old API availability
 
-**With this new ` mplfinance ` package installed, in addition to the new API, users can still access the old API**.<br> The old API may be removed some day, but for the foreseeable future we will keep it ... at least until we are very confident that users of the old API can accomplish the same things with the new API.
-
----
+**With this new ` mplfinance ` package installed, in addition to the new API, users can still access the old API**.<br> The old API may be removed someday, but for the foreseeable future we will keep it ... at least until we are very confident that users of the old API can accomplish the same things with the new API.  
 
 To access the old API with the new ` mplfinance ` package installed, change the old import statments
 
@@ -604,11 +605,4 @@ where `<method>` indicates the method you want to import, for example:
 
 ```python
     from mplfinance.original_flavor import candlestick_ohlc
-```
-
----
-
-
-```python
-
 ```
